@@ -1,4 +1,4 @@
-# ESP32 Weather Station v2.1.0
+# ESP32 Weather Station v2.1.1
 
 A production-ready IoT weather monitoring system with Firebase Cloud Functions middleware, real-time data streaming, and presence detection.
 
@@ -214,5 +214,5 @@ MIT
 
 ---
 
-**Firmware Version:** 2.1.0  
+**Firmware Version:** 2.1.1  
 **Last Updated:** February 10, 2026

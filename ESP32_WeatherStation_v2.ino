@@ -65,7 +65,7 @@
 // - DEVICE_ID
 
 // Firmware Info
-const char* FIRMWARE_VERSION = "2.1.0";
+const char* FIRMWARE_VERSION = "2.1.1";
 
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -124,7 +124,7 @@ void testAuthenticatedRequest(); // Added prototype
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println(F("\n\n=== ESP32 Weather Station v2.1.0 ==="));
+  Serial.println(F("\n\n=== ESP32 Weather Station v2.1.1 ==="));
   
   // Initialize Watchdog (compatible with both old and new ESP32 core versions)
   // Deinitialize first to prevent "already initialized" error on reboot
