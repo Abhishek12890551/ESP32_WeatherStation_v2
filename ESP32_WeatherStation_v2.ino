@@ -237,9 +237,9 @@ void loop() {
   readSensors();
   
   // Update Display
-  if (millis() - displayUpdatePrevMillis > DISPLAY_UPDATE) {
+  if (millis() - lastDisplay > DISPLAY_UPDATE) {
     updateDisplay();
-    displayUpdatePrevMillis = millis();
+    lastDisplay = millis();
   }
   
   // Upload Live Data
@@ -249,9 +249,9 @@ void loop() {
   }
   
   // Store Historical Data
-  if (millis() - sendHistoryPrevMillis > HISTORY_INTERVAL && wifiConnected) {
+  if (millis() - lastHistory > HISTORY_INTERVAL && wifiConnected) {
     storeHistoricalData();
-    sendHistoryPrevMillis = millis();
+    lastHistory = millis();
   }
   
   // Check for Alerts
@@ -984,9 +984,9 @@ void testAuthenticatedRequest() {
 
   Serial.println("\n--- Testing Authenticated API Request ---");
   
-  // Get the current ID token from the Firebase Auth object
+  // Get the current ID token from the Firebase object
   // Note: This token is automatically refreshed by the library
-  String idToken = auth.token.id_token;
+  String idToken = Firebase.getToken();
   
   if (idToken.length() == 0) {
     Serial.println("Error: No ID token available yet");

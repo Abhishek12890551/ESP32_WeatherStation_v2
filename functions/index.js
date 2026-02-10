@@ -31,6 +31,35 @@ const app = express();
 app.use(cors({ origin: true })); // restrict origin in production
 app.use(express.json());
 
+// ─── Authentication Middleware ───────────────────────────────────────
+const authenticate = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ 
+      error: "Unauthorized",
+      message: "Missing or invalid Authorization header. Expected: Bearer <token>"
+    });
+  }
+  
+  const idToken = authHeader.split("Bearer ")[1];
+  
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = decodedToken; // Attach user info to request
+    next();
+  } catch (error) {
+    console.error("Auth error:", error.message);
+    return res.status(401).json({ 
+      error: "Unauthorized",
+      message: "Invalid or expired token"
+    });
+  }
+};
+
+// Apply authentication to all API routes
+app.use(authenticate);
+
 // ──────────────────────────────────────────────────────────────────────
 // GET /live
 // Returns the latest sensor data with a derived air_quality_status field.
