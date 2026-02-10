@@ -461,8 +461,7 @@ void initFirebase() {
     display.display();
     delay(2000);
     
-    // Setup stream for receiving commands
-    setupFirebaseStream();
+
     
     // Setup presence detection (auto-offline on disconnect)
     setupPresenceDetection();
@@ -862,46 +861,47 @@ void checkFirebaseCommands() {
   
   // Read commands
   if (Firebase.RTDB.getJSON(&fbdo, commandPath.c_str())) {
-    FirebaseJson &json = fbdo.jsonObject();
-    FirebaseJsonData result;
-    
-    // Check for calibration command
-    if (json.get(result, "calibrate")) {
-      if (result.type == "bool" && result.boolValue == true) {
-        Serial.println("📡 Remote calibration requested");
-        
-        display.clearDisplay();
-        display.setCursor(0, 20);
-        display.println("Remote Command:");
-        display.println("Calibrating...");
-        display.display();
-        
-        calibrateMQ135();
-        
-        // Clear the command
-        Firebase.RTDB.setBool(&fbdo, (commandPath + "/calibrate").c_str(), false);
-        
-        // Send confirmation
-        FirebaseJson confirmJson;
-        confirmJson.set("type", "calibration_complete");
-        confirmJson.set("message", "Calibration completed. Ro = " + String(Ro, 2));
-        confirmJson.set("timestamp/.sv", "timestamp");
-        Firebase.RTDB.pushJSON(&fbdo, 
-          ("/weather_station/" + String(DEVICE_ID) + "/notifications").c_str(), 
-          &confirmJson);
+    if (fbdo.dataType() == "json") {
+      FirebaseJson &json = fbdo.jsonObject();
+      FirebaseJsonData result;
+      
+      // Check for calibration command
+      if (json.get(result, "calibrate")) {
+        if ((result.type == "bool" || result.type == "boolean") && result.boolValue == true) {
+          Serial.println("📡 Remote calibration requested");
+          
+          display.clearDisplay();
+          display.setCursor(0, 20);
+          display.println("Remote Command:");
+          display.println("Calibrating...");
+          display.display();
+          
+          calibrateMQ135();
+          
+          // Clear the command
+          Firebase.RTDB.setBool(&fbdo, (commandPath + "/calibrate").c_str(), false);
+          
+          // Send confirmation
+          FirebaseJson confirmJson;
+          confirmJson.set("type", "calibration_complete");
+          confirmJson.set("message", "Calibration completed. Ro = " + String(Ro, 2));
+          confirmJson.set("timestamp/.sv", "timestamp");
+          Firebase.RTDB.pushJSON(&fbdo, 
+            ("/weather_station/" + String(DEVICE_ID) + "/notifications").c_str(), 
+            &confirmJson);
+        }
       }
-    }
-    
-    // Check for reboot command
-    if (json.get(result, "reboot")) {
-      if (result.type == "bool" && result.boolValue == true) {
-        Serial.println("📡 Remote reboot requested");
-        
-        display.clearDisplay();
-        display.setCursor(0, 20);
-        display.println("Remote Command:");
-        display.println("Rebooting...");
-        display.display();
+      
+      // Check for reboot command
+      if (json.get(result, "reboot")) {
+        if ((result.type == "bool" || result.type == "boolean") && result.boolValue == true) {
+          Serial.println("📡 Remote reboot requested");
+          
+          display.clearDisplay();
+          display.setCursor(0, 20);
+          display.println("Remote Command:");
+          display.println("Rebooting...");
+          display.display();
         
         // Clear the command first
         Firebase.RTDB.setBool(&fbdo, (commandPath + "/reboot").c_str(), false);
@@ -911,39 +911,42 @@ void checkFirebaseCommands() {
       }
     }
     
-    // Check for reset command (clear preferences)
-    if (json.get(result, "reset_preferences")) {
-      if (result.type == "bool" && result.boolValue == true) {
-        Serial.println("📡 Reset preferences requested");
-        
-        preferences.clear();
-        preferences.putBool("force_calib", true);
-        
-        // Clear the command
-        Firebase.RTDB.setBool(&fbdo, (commandPath + "/reset_preferences").c_str(), false);
-        
-        Serial.println("Preferences cleared. Rebooting...");
-        delay(1000);
-        ESP.restart();
+      // Check for reset command (clear preferences)
+      if (json.get(result, "reset_preferences")) {
+        if ((result.type == "bool" || result.type == "boolean") && result.boolValue == true) {
+          Serial.println("📡 Reset preferences requested");
+          
+          preferences.clear();
+          preferences.putBool("force_calib", true);
+          
+          // Clear the command
+          Firebase.RTDB.setBool(&fbdo, (commandPath + "/reset_preferences").c_str(), false);
+          
+          Serial.println("Preferences cleared. Rebooting...");
+          delay(1000);
+          ESP.restart();
+        }
+      }
+      
+      // Check for display test command
+      if (json.get(result, "test_display")) {
+        if ((result.type == "bool" || result.type == "boolean") && result.boolValue == true) {
+          Serial.println("📡 Display test requested");
+          
+          display.clearDisplay();
+          display.setTextSize(2);
+          display.setCursor(10, 20);
+          display.println("TEST OK!");
+          display.display();
+          delay(3000);
+          // Clear the command
+          Firebase.RTDB.setBool(&fbdo, (commandPath + "/test_display").c_str(), false);
+        }
       }
     }
-    
-    // Check for display test command
-    if (json.get(result, "test_display")) {
-      if (result.type == "bool" && result.boolValue == true) {
-        Serial.println("📡 Display test requested");
-        
-        display.clearDisplay();
-        display.setTextSize(2);
-        display.setCursor(10, 20);
-        display.println("TEST OK!");
-        display.display();
-        delay(3000);
-        
-        // Clear the command
-        Firebase.RTDB.setBool(&fbdo, (commandPath + "/test_display").c_str(), false);
-      }
-    }
+  } else {
+    Serial.print("Error reading commands: ");
+    Serial.println(fbdo.errorReason());
   }
 }
 
