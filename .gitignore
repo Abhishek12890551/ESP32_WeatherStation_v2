@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
 functions/node_modules/
-ESP32_WeatherStation_v2.ino
+ESP32_WeatherStation_v2.ino/
 
 # Firebase
 .firebase/
