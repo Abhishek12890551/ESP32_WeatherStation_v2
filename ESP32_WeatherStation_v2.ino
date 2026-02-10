@@ -27,9 +27,11 @@
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 
-// Firebase Helpers
 #include <addons/TokenHelper.h>
 #include <addons/RTDBHelper.h>
+
+// Include secrets (WiFi and Firebase credentials)
+#include "secrets.h"
 
 /* ================= CONFIGURATION ================= */
 // Hardware
@@ -60,19 +62,18 @@
 #define GAS_ALERT_THRESHOLD 300    // PPM (adjust for your environment)
 #define PRESSURE_LOW_ALERT 980.0   // hPa (storm warning)
 
-/* ================= CREDENTIALS (Move to Preferences) ================= */
-// WiFi Credentials
-const char* WIFI_SSID = "I See You...";
-const char* WIFI_PASSWORD = "05515355";
+/* ================= CONFIGURATION ================= */
+// Credentials are now in secrets.h (not tracked in git)
+// The secrets.h file should define:
+// - WIFI_SSID
+// - WIFI_PASSWORD  
+// - FIREBASE_API_KEY
+// - FIREBASE_DATABASE_URL
+// - FIREBASE_USER_EMAIL
+// - FIREBASE_USER_PASSWORD
+// - DEVICE_ID
 
-// Firebase Credentials
-const char* API_KEY = "AIzaSyAoVUoxiLFxyB-xX_xR0XkJkKfbuzgNFco";
-const char* DATABASE_URL = "https://esp32-weather-station-2508e-default-rtdb.asia-southeast1.firebasedatabase.app";
-const char* USER_EMAIL = "esp32@weather.com";
-const char* USER_PASSWORD = "password123";
-
-// Device Info
-const char* DEVICE_ID = "ESP32_WS_001";  // Unique ID for each station
+// Firmware Info
 const char* FIRMWARE_VERSION = "2.1.0";
 
 /* ================= OBJECTS ================= */
@@ -434,10 +435,10 @@ void initFirebase() {
   display.println("Firebase...");
   display.display();
   
-  config.api_key = API_KEY;
-  config.database_url = DATABASE_URL;
-  auth.user.email = USER_EMAIL;
-  auth.user.password = USER_PASSWORD;
+  config.api_key = FIREBASE_API_KEY;
+  config.database_url = FIREBASE_DATABASE_URL;
+  auth.user.email = FIREBASE_USER_EMAIL;
+  auth.user.password = FIREBASE_USER_PASSWORD;
   
   config.token_status_callback = tokenStatusCallback;
   config.timeout.serverResponse = FIREBASE_TIMEOUT;
