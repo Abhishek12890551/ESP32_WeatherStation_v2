@@ -994,12 +994,11 @@ void testAuthenticatedRequest() {
   }
   
   HTTPClient http;
-  String apiUrl = "https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api/live";
   
   Serial.print("Requesting: ");
-  Serial.println(apiUrl);
+  Serial.println(API_URL);
   
-  http.begin(apiUrl);
+  http.begin(API_URL);
   http.addHeader("Authorization", "Bearer " + idToken);
   
   int httpCode = http.GET();
