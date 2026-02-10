@@ -1,20 +1,5 @@
 /*
- * ESP32 Weather Station - Production Ready v2.1.0
- * Features:
- * - OTA Updates
- * - Error Recovery & Watchdog (FIXED)
- * - Secure Credentials Management
- * - Historical Data Storage
- * - Alert System (Gas Leak, Extreme Weather)
- * - MQ-135 Calibration (CO2, NH3, Benzene, Alcohol, Smoke)
- * - Connection Health Monitoring
- * - Remote Command Support
- * 
- * FIXES:
- * - Watchdog timeout during calibration
- * - Duplicate watchdog initialization on reboot
- * - Optimized calibration process
- * - Remote calibration trigger
+ * ESP32 Weather Station v2.1.0
  */
 
 #include <WiFi.h>
@@ -31,10 +16,9 @@
 #include <addons/RTDBHelper.h>
 #include <HTTPClient.h>
 
-// Include secrets (WiFi and Firebase credentials)
 #include "secrets.h"
 
-/* ================= CONFIGURATION ================= */
+// Hardware Configuration
 // Hardware
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -63,7 +47,7 @@
 #define GAS_ALERT_THRESHOLD 300    // PPM (adjust for your environment)
 #define PRESSURE_LOW_ALERT 980.0   // hPa (storm warning)
 
-/* ================= CONFIGURATION ================= */
+
 // Credentials are now in secrets.h (not tracked in git)
 // The secrets.h file should define:
 // - WIFI_SSID
@@ -77,7 +61,7 @@
 // Firmware Info
 const char* FIRMWARE_VERSION = "2.1.0";
 
-/* ================= OBJECTS ================= */
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
 FirebaseData fbdo;
@@ -86,7 +70,7 @@ FirebaseAuth auth;
 FirebaseConfig config;
 Preferences preferences;
 
-/* ================= GLOBAL VARIABLES ================= */
+// Global Variables
 // Timing
 unsigned long lastUpload = 0;
 unsigned long lastHistory = 0;
@@ -113,7 +97,7 @@ int reconnectAttempts = 0;
 bool gasAlertActive = false;
 bool tempAlertActive = false;
 
-/* ================= FUNCTION DECLARATIONS ================= */
+// Functions
 void initHardware();
 void connectWiFi();
 void handleWiFiDisconnect();
@@ -133,7 +117,6 @@ void sendAlert(String alertType, String message);
 void checkFirebaseCommands();
 void testAuthenticatedRequest(); // Added prototype
 
-/* ================= SETUP ================= */
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -206,7 +189,6 @@ void setup() {
   esp_task_wdt_reset();
 }
 
-/* ================= MAIN LOOP ================= */
 void loop() {
   esp_task_wdt_reset();  // Reset watchdog
   
@@ -267,7 +249,6 @@ void loop() {
   delay(100);  // Small delay to prevent tight loop
 }
 
-/* ================= HARDWARE INITIALIZATION ================= */
 void initHardware() {
   Serial.println("Initializing hardware...");
   
@@ -314,7 +295,6 @@ void initHardware() {
   Serial.println("MQ-135 pin configured");
 }
 
-/* ================= WIFI CONNECTION ================= */
 void connectWiFi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
@@ -379,7 +359,6 @@ void handleWiFiDisconnect() {
   }
 }
 
-/* ================= OTA SETUP ================= */
 void setupOTA() {
   ArduinoOTA.setHostname(DEVICE_ID);
   ArduinoOTA.setPassword("weather2024");  // Change this!
@@ -434,7 +413,6 @@ void setupOTA() {
   Serial.println("OTA Ready");
 }
 
-/* ================= FIREBASE INITIALIZATION ================= */
 void initFirebase() {
   Serial.println("Initializing Firebase...");
   
@@ -528,7 +506,6 @@ void setupPresenceDetection() {
   }
 }
 
-/* ================= SENSOR READING ================= */
 void readSensors() {
   if (sensorError) return;
   
@@ -556,7 +533,6 @@ void readSensors() {
   gasPPM = calculateGasPPM(gasRaw);
 }
 
-/* ================= MQ-135 CALIBRATION & CALCULATION ================= */
 void calibrateMQ135() {
   Serial.println("Calibrating MQ-135... Please ensure clean air!");
   
@@ -646,7 +622,6 @@ float calculateGasPPM(int adcValue) {
   return ppm;
 }
 
-/* ================= DISPLAY UPDATE ================= */
 void updateDisplay() {
   display.clearDisplay();
   
@@ -705,7 +680,6 @@ void updateDisplay() {
   display.display();
 }
 
-/* ================= FIREBASE UPLOAD ================= */
 void uploadLiveData() {
   if (!Firebase.ready()) {
     Serial.println("Firebase not ready");
@@ -815,7 +789,6 @@ void sendBootNotification() {
   }
 }
 
-/* ================= ALERTS ================= */
 void checkAlerts() {
   // Gas Leak Alert
   if (gasPPM > GAS_ALERT_THRESHOLD) {
@@ -882,7 +855,6 @@ void sendAlert(String alertType, String message) {
   }
 }
 
-/* ================= FIREBASE COMMANDS ================= */
 void checkFirebaseCommands() {
   if (!Firebase.ready()) return;
   
@@ -975,7 +947,6 @@ void checkFirebaseCommands() {
   }
 }
 
-/* ================= API TEST ================= */
 void testAuthenticatedRequest() {
   if (WiFi.status() != WL_CONNECTED || !Firebase.ready()) {
     Serial.println("Cannot test API: WiFi or Firebase not ready");
@@ -1019,5 +990,3 @@ void testAuthenticatedRequest() {
   http.end();
   Serial.println("-----------------------------------------\n");
 }
-
-/* ================= END OF CODE ================= */

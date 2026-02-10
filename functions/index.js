@@ -1,13 +1,5 @@
 /**
  * Firebase Cloud Functions — ESP32 Weather Station Middleware
- *
- * Exposes a secure REST API so clients never touch RTDB directly.
- * Also runs a weekly scheduled cleanup of stale history records.
- *
- * Endpoints:
- *   GET  /live      → latest sensor data + derived air_quality_status
- *   GET  /history   → last 50 historical records (newest first)
- *   POST /command   → write a validated command to the device
  */
 
 const functions = require("firebase-functions");
@@ -15,23 +7,23 @@ const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
 
-// ─── Firebase Admin SDK ──────────────────────────────────────────────
+
 admin.initializeApp();
 const db = admin.database();
 
-// ─── Constants ───────────────────────────────────────────────────────
+// Constants
 const DEVICE_ID = "ESP32_WS_001";
 const BASE_PATH = `/weather_station/${DEVICE_ID}`;
 const GAS_PPM_THRESHOLD = 300; // same as firmware GAS_ALERT_THRESHOLD
 const ALLOWED_COMMANDS = ["calibrate", "reboot", "reset_preferences", "test_display"];
 const HISTORY_RETENTION_DAYS = 30;
 
-// ─── Express App ─────────────────────────────────────────────────────
+// Express App Setup
 const app = express();
 app.use(cors({ origin: true })); // restrict origin in production
 app.use(express.json());
 
-// ─── Authentication Middleware ───────────────────────────────────────
+// Authentication Middleware
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   
@@ -60,10 +52,7 @@ const authenticate = async (req, res, next) => {
 // Apply authentication to all API routes
 app.use(authenticate);
 
-// ──────────────────────────────────────────────────────────────────────
-// GET /live
-// Returns the latest sensor data with a derived air_quality_status field.
-// ──────────────────────────────────────────────────────────────────────
+// GET /live: latest sensor data
 app.get("/live", async (req, res) => {
   try {
     const [liveSnap, metaSnap] = await Promise.all([
@@ -104,10 +93,7 @@ app.get("/live", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────
-// GET /history
-// Returns the last 50 historical records, sorted newest-first.
-// ──────────────────────────────────────────────────────────────────────
+// GET /history: last 50 historical records
 app.get("/history", async (req, res) => {
   try {
     const snap = await db
@@ -134,11 +120,7 @@ app.get("/history", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────
-// POST /command
-// Writes a validated command to the device's commands node.
-// Body: { "action": "reboot" }
-// ──────────────────────────────────────────────────────────────────────
+// POST /command: send command to device
 app.post("/command", async (req, res) => {
   try {
     const { action } = req.body;
@@ -177,14 +159,10 @@ app.post("/command", async (req, res) => {
   }
 });
 
-// ─── Export Express app as a Cloud Function ──────────────────────────
+// Export API as Cloud Function
 exports.api = functions.https.onRequest(app);
 
-// ──────────────────────────────────────────────────────────────────────
-// SCHEDULED: cleanupHistory
-// Runs every Sunday at midnight UTC.
-// Deletes history entries older than 30 days.
-// ──────────────────────────────────────────────────────────────────────
+// Scheduled: cleanup history older than 30 days
 exports.cleanupHistory = functions.pubsub
   .schedule("every sunday 00:00")
   .timeZone("UTC")
