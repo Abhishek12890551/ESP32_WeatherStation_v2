@@ -1,5 +1,11 @@
 /*
  * ESP32 Weather Station v2.1.0
+ * 
+ * Features:
+ * - Real-time BME280 sensor monitoring
+ * - MQ-135 Gas sensor with remote calibration
+ * - Firebase Realtime Database integration
+ * - Authenticated REST API support
  */
 
 #include <WiFi.h>
