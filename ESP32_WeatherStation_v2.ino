@@ -65,7 +65,6 @@ const char* FIRMWARE_VERSION = "2.1.0";
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
 FirebaseData fbdo;
-FirebaseData streamFbdo;  // For listening to commands
 FirebaseAuth auth;
 FirebaseConfig config;
 Preferences preferences;
@@ -103,7 +102,6 @@ void connectWiFi();
 void handleWiFiDisconnect();
 void setupOTA();
 void initFirebase();
-void setupFirebaseStream();
 void setupPresenceDetection();
 void readSensors();
 void calibrateMQ135();
@@ -120,7 +118,7 @@ void testAuthenticatedRequest(); // Added prototype
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n\n=== ESP32 Weather Station v" + String(FIRMWARE_VERSION) + " ===");
+  Serial.println(F("\n\n=== ESP32 Weather Station v2.1.0 ==="));
   
   // Initialize Watchdog (compatible with both old and new ESP32 core versions)
   // Deinitialize first to prevent "already initialized" error on reboot
@@ -474,16 +472,6 @@ void initFirebase() {
     display.println("Firebase Failed!");
     display.display();
     delay(2000);
-  }
-}
-
-void setupFirebaseStream() {
-  // Listen for commands from dashboard (e.g., recalibrate, reboot)
-  String streamPath = "/weather_station/" + String(DEVICE_ID) + "/commands";
-  if (Firebase.RTDB.beginStream(&streamFbdo, streamPath.c_str())) {
-    Serial.println("Stream started: " + streamPath);
-  } else {
-    Serial.println("Stream failed to start");
   }
 }
 
