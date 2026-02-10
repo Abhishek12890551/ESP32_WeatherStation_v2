@@ -210,7 +210,7 @@ MIT
 
 ## 👤 Author
 
-**Mintu**
+**Abhishek Kumar**
 
 ---
 
