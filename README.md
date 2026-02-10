@@ -40,17 +40,30 @@ Connect the sensors to your ESP32:
 - MQ-135: Analog (GPIO34)
 - OLED: I2C (0x3C)
 
-### 2. Flash Firmware
+### 2. Configure Credentials
+
+1. Create `secrets.h` in the project root (this file is gitignored)
+2. Add your credentials:
+
+```cpp
+// secrets.h
+#define WIFI_SSID "your_wifi_ssid"
+#define WIFI_PASSWORD "your_wifi_password"
+#define FIREBASE_API_KEY "your_firebase_api_key"
+#define FIREBASE_DATABASE_URL "your_database_url"
+#define FIREBASE_USER_EMAIL "your_email"
+#define FIREBASE_USER_PASSWORD "your_password"
+```
+
+### 3. Flash Firmware
 
 1. Open `ESP32_WeatherStation_v2.ino` in Arduino IDE
-2. Update WiFi credentials (lines 65-66)
-3. Update Firebase credentials (lines 69-72)
-4. Upload to ESP32
+2. Include `secrets.h` at the top of the file
+3. Upload to ESP32
 
-### 3. Deploy Cloud Functions
+### 4. Deploy Cloud Functions
 
 ```bash
-cd d:\ESP32_WeatherStation_v2
 npm install -g firebase-tools
 npx firebase login
 npx firebase deploy --only functions
@@ -58,26 +71,31 @@ npx firebase deploy --only functions
 
 ## 📡 API Endpoints
 
-**Base URL:** `https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api`
+**Base URL:** `https://YOUR_REGION-YOUR_PROJECT_ID.cloudfunctions.net/api`
+
+> **🔒 Note:** All endpoints require Firebase Authentication. See Security section below.
 
 ### Get Live Data
 
 ```bash
-curl https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api/live
+curl https://YOUR_REGION-YOUR_PROJECT_ID.cloudfunctions.net/api/live \
+  -H "Authorization: Bearer YOUR_ID_TOKEN"
 ```
 
 ### Get History
 
 ```bash
-curl https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api/history
+curl https://YOUR_REGION-YOUR_PROJECT_ID.cloudfunctions.net/api/history \
+  -H "Authorization: Bearer YOUR_ID_TOKEN"
 ```
 
-### Send Command (PowerShell)
+### Send Command
 
-```powershell
-curl -X POST https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api/command `
-  -H "Content-Type: application/json" `
-  -Body '{"action": "reboot"}'
+```bash
+curl -X POST https://YOUR_REGION-YOUR_PROJECT_ID.cloudfunctions.net/api/command \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_ID_TOKEN" \
+  -d '{"action": "reboot"}'
 ```
 
 **Available commands:** `calibrate`, `reboot`, `reset_preferences`, `test_display`
@@ -87,6 +105,7 @@ curl -X POST https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/
 ```
 ESP32_WeatherStation_v2/
 ├── ESP32_WeatherStation_v2.ino    # Main firmware
+├── secrets.h                       # Credentials (gitignored)
 ├── functions/
 │   ├── index.js                    # Cloud Functions (Express API + scheduler)
 │   ├── package.json
@@ -113,7 +132,7 @@ ESP32_WeatherStation_v2/
 ## 📊 Firebase RTDB Structure
 
 ```
-/weather_station/ESP32_WS_001/
+/weather_station/DEVICE_ID/
 ├── live/                    # Latest sensor readings
 ├── meta/                    # Device metadata + last_seen
 ├── history/                 # Historical data (push entries)
@@ -122,14 +141,68 @@ ESP32_WeatherStation_v2/
 └── commands/                # Remote commands (polled every 5s)
 ```
 
-## 🛡️ Security Notes
+## 🛡️ Security Implementation
 
-> **⚠️ IMPORTANT:** The firmware currently contains hardcoded credentials. For production:
->
-> 1. Move WiFi/Firebase credentials to a separate config file
-> 2. Add `.gitignore` entry for credentials
-> 3. Use Firebase App Check for API security
-> 4. Restrict CORS origins in Cloud Functions
+### 1. Protect Credentials
+
+**Create `secrets.h`** (already in `.gitignore`):
+
+```cpp
+#define WIFI_SSID "your_wifi_ssid"
+#define WIFI_PASSWORD "your_wifi_password"
+#define FIREBASE_API_KEY "your_api_key"
+#define FIREBASE_DATABASE_URL "https://your-project.firebasedatabase.app"
+#define FIREBASE_USER_EMAIL "device@yourproject.com"
+#define FIREBASE_USER_PASSWORD "secure_password"
+```
+
+### 2. Add API Authentication (Optional but Recommended)
+
+To secure the Cloud Functions API, add Firebase Auth middleware:
+
+```javascript
+// functions/index.js - Add before route definitions
+const authenticate = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const idToken = authHeader.split("Bearer ")[1];
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+};
+
+// Apply to protected routes
+app.get("/live", authenticate, async (req, res) => {
+  /* ... */
+});
+```
+
+### 3. Restrict CORS Origins
+
+Replace in `functions/index.js`:
+
+```javascript
+app.use(
+  cors({
+    origin: ["https://yourdomain.com"],
+    credentials: true,
+  }),
+);
+```
+
+### 4. Enable Firebase App Check
+
+1. Go to Firebase Console → App Check
+2. Enable for your project
+3. Add enforcement for Cloud Functions
 
 ## 📝 License
 
@@ -137,7 +210,7 @@ MIT
 
 ## 👤 Author
 
-**Mintu** (mintu12890551@gmail.com)
+**Mintu**
 
 ---
 

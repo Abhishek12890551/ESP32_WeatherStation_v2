@@ -21,3 +21,4 @@ Thumbs.db
 
 # Sensitive files (if any)
 # Note: Credentials are in the .ino file - consider moving to environment variables
+secrets.h
