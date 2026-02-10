@@ -29,6 +29,7 @@
 
 #include <addons/TokenHelper.h>
 #include <addons/RTDBHelper.h>
+#include <HTTPClient.h>
 
 // Include secrets (WiFi and Firebase credentials)
 #include "secrets.h"
@@ -105,6 +106,7 @@ float Ro = 10.0;  // Sensor resistance in clean air
 bool wifiConnected = false;
 bool firebaseReady = false;
 bool sensorError = false;
+bool hasTestedApi = false;
 int reconnectAttempts = 0;
 
 // Alert Flags
@@ -129,6 +131,7 @@ void sendBootNotification();
 void checkAlerts();
 void sendAlert(String alertType, String message);
 void checkFirebaseCommands();
+void testAuthenticatedRequest(); // Added prototype
 
 /* ================= SETUP ================= */
 void setup() {
@@ -219,18 +222,24 @@ void loop() {
   }
   
   // Check for remote commands (every 5 seconds)
-  if (millis() - lastCommandCheck > 5000 && wifiConnected) {
+  if (millis() - lastCommandCheck > 5000 && wifiConnected && firebaseReady) {
     checkFirebaseCommands();
     lastCommandCheck = millis();
+    
+    // Run API test once
+    if (!hasTestedApi) {
+      testAuthenticatedRequest();
+      hasTestedApi = true;
+    }
   }
   
   // Read Sensors
   readSensors();
   
   // Update Display
-  if (millis() - lastDisplay > DISPLAY_UPDATE) {
+  if (millis() - displayUpdatePrevMillis > DISPLAY_UPDATE) {
     updateDisplay();
-    lastDisplay = millis();
+    displayUpdatePrevMillis = millis();
   }
   
   // Upload Live Data
@@ -240,9 +249,9 @@ void loop() {
   }
   
   // Store Historical Data
-  if (millis() - lastHistory > HISTORY_INTERVAL && wifiConnected) {
+  if (millis() - sendHistoryPrevMillis > HISTORY_INTERVAL && wifiConnected) {
     storeHistoricalData();
-    lastHistory = millis();
+    sendHistoryPrevMillis = millis();
   }
   
   // Check for Alerts
@@ -456,9 +465,17 @@ void initFirebase() {
     esp_task_wdt_reset();  // Reset watchdog during Firebase init
   }
   
+  // Check if Firebase is ready and run tasks
   if (Firebase.ready()) {
-    Serial.println("Firebase Connected!");
     firebaseReady = true;
+
+    // Run API test once
+    if (!hasTestedApi) {
+      testAuthenticatedRequest();
+      hasTestedApi = true;
+    }
+    
+    Serial.println("Firebase Connected!");
     
     display.clearDisplay();
     display.setCursor(0, 20);
@@ -956,6 +973,52 @@ void checkFirebaseCommands() {
       }
     }
   }
+}
+
+/* ================= API TEST ================= */
+void testAuthenticatedRequest() {
+  if (WiFi.status() != WL_CONNECTED || !Firebase.ready()) {
+    Serial.println("Cannot test API: WiFi or Firebase not ready");
+    return;
+  }
+
+  Serial.println("\n--- Testing Authenticated API Request ---");
+  
+  // Get the current ID token from the Firebase Auth object
+  // Note: This token is automatically refreshed by the library
+  String idToken = auth.token.id_token;
+  
+  if (idToken.length() == 0) {
+    Serial.println("Error: No ID token available yet");
+    return;
+  }
+  
+  HTTPClient http;
+  String apiUrl = "https://us-central1-esp32-weather-station-2508e.cloudfunctions.net/api/live";
+  
+  Serial.print("Requesting: ");
+  Serial.println(apiUrl);
+  
+  http.begin(apiUrl);
+  http.addHeader("Authorization", "Bearer " + idToken);
+  
+  int httpCode = http.GET();
+  
+  if (httpCode > 0) {
+    Serial.printf("HTTP Code: %d\n", httpCode);
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Response: " + payload);
+      Serial.println("✓ Authenticated API access successful!");
+    } else {
+      Serial.printf("✗ API request failed: %s\n", http.errorToString(httpCode).c_str());
+    }
+  } else {
+    Serial.printf("✗ Connection failed: %s\n", http.errorToString(httpCode).c_str());
+  }
+  
+  http.end();
+  Serial.println("-----------------------------------------\n");
 }
 
 /* ================= END OF CODE ================= */
