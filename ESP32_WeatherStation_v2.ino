@@ -22,6 +22,13 @@
 #include <addons/RTDBHelper.h>
 #include <HTTPClient.h>
 
+#include <WiFiManager.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+#include <DoubleResetDetector.h>
+
 #include "secrets.h"
 
 // Hardware Configuration
@@ -67,7 +74,7 @@
 
 // Firmware Info
 // Firmware Info
-const char* FIRMWARE_VERSION = "2.1.3";
+const char* FIRMWARE_VERSION = "3.0.0";
 
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -96,6 +103,41 @@ float Ro = 10.0;  // Sensor resistance in clean air
 // Status Flags
 bool wifiConnected = false;
 bool firebaseReady = false;
+
+// NEW: v3.0.0 Global Infrastructure
+TaskHandle_t NetworkTask;
+TaskHandle_t SensorTask;
+SemaphoreHandle_t sensorDataMutex;
+
+// Safe Mode
+#define DRD_TIMEOUT 2.0
+#define DRD_ADDRESS 0
+DoubleResetDetector* drd;
+bool isSafeMode = false;
+
+// WiFiManager & Config
+WiFiManager wm;
+char fb_api_key[64];
+char tg_bot_token[64];
+char tg_chat_id[20];
+
+// NTP
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 5.5 * 3600, 60000); // Default to +5:30
+
+// Telegram
+WiFiClientSecure tgClient;
+UniversalTelegramBot bot(tg_bot_token, tgClient);
+
+// UI & Logic
+bool isWarmingUp = true;
+unsigned long warmupStart = 0;
+int currentDisplayPage = 0;
+#define MAX_PAGES 3
+#define TOUCH_PIN 15
+#define TOUCH_THRESHOLD 40
+bool displayDimmed = false;
+unsigned long lastActivity = 0;
 bool sensorError = false;
 bool hasTestedApi = false;
 int reconnectAttempts = 0;
@@ -106,14 +148,13 @@ bool tempAlertActive = false;
 
 // Functions
 void initHardware();
-void connectWiFi();
-void handleWiFiDisconnect();
+void setupWiFiManager();
 void setupOTA();
 void initFirebase();
 void setupPresenceDetection();
 void readSensors();
 void calibrateMQ135();
-float calculateGasPPM(int adcValue);
+float calculateGasPPM(int adcValue, float temp, float hum);
 void updateDisplay();
 void uploadLiveData();
 void storeHistoricalData();
@@ -123,145 +164,128 @@ void sendAlert(String alertType, String message);
 void checkFirebaseCommands();
 void testAuthenticatedRequest();
 void logVersionHistory();
+void networkTaskImpl(void* _);
+void sensorTaskImpl(void* _);
+void handleTelegramCommands();
+void checkTouchSensor();
+void updateWarmup();
+void saveConfigCallback();
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println(F("\n\n=== ESP32 Weather Station v2.1.1 ==="));
+  Serial.println(F("\n\n=== ESP32 Weather Station v3.0.0 Mega Update ==="));
   
-  // Initialize Watchdog (compatible with both old and new ESP32 core versions)
-  // Deinitialize first to prevent "already initialized" error on reboot
-  esp_task_wdt_deinit();
-  delay(100);
+  // 1. Initialize Mutex for thread-safe sensor data access
+  sensorDataMutex = xSemaphoreCreateBinary();
+  if (sensorDataMutex != NULL) xSemaphoreGive(sensorDataMutex);
   
-  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-    // ESP32 core v3.x and above
-    esp_task_wdt_config_t wdt_config = {
-      .timeout_ms = WATCHDOG_TIMEOUT * 1000,
-      .idle_core_mask = 0,
-      .trigger_panic = true
-    };
-    esp_task_wdt_init(&wdt_config);
-  #else
-    // ESP32 core v2.x
-    esp_task_wdt_init(WATCHDOG_TIMEOUT, true);
-  #endif
-  esp_task_wdt_add(NULL);
-  Serial.println("Watchdog initialized (30s timeout)");
+  // 2. Double Reset Detector (Safe Mode)
+  drd = new DoubleResetDetector(DRD_TIMEOUT, DRD_ADDRESS);
+  if (drd->detectDoubleReset()) {
+    Serial.println("!!! SAFE MODE DETECTED !!!");
+    isSafeMode = true;
+  }
   
-  // Status LED
+  // 3. Status LED
   pinMode(LED_STATUS, OUTPUT);
-  digitalWrite(LED_STATUS, LOW);
+  digitalWrite(LED_STATUS, HIGH); // On during setup
   
-  // Preferences (for storing calibration)
+  // 4. Preferences
   preferences.begin("weather", false);
   Ro = preferences.getFloat("mq135_ro", 10.0);
   
-  // Initialize Hardware
+  // 5. Initialize Hardware (OLED, Sensors)
   initHardware();
-  esp_task_wdt_reset();
   
-  // Connect WiFi
-  connectWiFi();
-  esp_task_wdt_reset();
+  // 6. WiFiManager (Non-blocking usually, blocking in Safe Mode)
+  setupWiFiManager();
   
-  // Setup OTA
-  setupOTA();
+  // 7. Initialize Warmup Timer
+  warmupStart = millis();
+  isWarmingUp = true;
   
-  // Initialize Firebase
-  initFirebase();
-  esp_task_wdt_reset();
-  
-  // Calibration Strategy: Only on first boot or manual trigger
-  // This prevents watchdog timeout on every reboot
-  if (preferences.getBool("force_calib", false)) {
-    Serial.println("Forced calibration requested...");
-    calibrateMQ135();
-    preferences.putBool("force_calib", false);
-  } else if (!preferences.isKey("mq135_ro")) {
-    // First time boot - needs calibration
-    Serial.println("First boot detected - calibrating...");
-    calibrateMQ135();
-  } else {
-    Serial.println("Using stored calibration. Ro = " + String(Ro, 2));
-    Serial.println("To recalibrate, use Firebase command or reset preferences");
-  }
-  esp_task_wdt_reset();
-  
-  // Send boot notification
-  sendBootNotification();
-  
-  // Track firmware version and log history if it's a new version
-  String lastVersion = preferences.getString("last_ver", "0.0.0");
-  if (lastVersion != FIRMWARE_VERSION) {
-    Serial.println("New firmware version detected: " + String(FIRMWARE_VERSION));
-    logVersionHistory();
-    preferences.putString("last_ver", FIRMWARE_VERSION);
-  }
-  
-  Serial.println("Setup complete! System ready.");
-  Serial.println("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
-  esp_task_wdt_reset();
+  // 8. Create FreeRTOS Tasks
+  // Core 0: Networking (WiFi, Firebase, Telegram, NTP, OTA)
+  xTaskCreatePinnedToCore(
+    networkTaskImpl,
+    "NetworkTask",
+    10000,      // Stack size
+    NULL,
+    1,          // Priority
+    &NetworkTask,
+    0           // Core 0
+  );
+
+  // Core 1: Sensors and UI (Sampling, OLED, Touch)
+  xTaskCreatePinnedToCore(
+    sensorTaskImpl,
+    "SensorTask",
+    8000,       // Stack size
+    NULL,
+    1,          // Priority
+    &SensorTask,
+    1           // Core 1
+  );
+
+  Serial.println("Multitasking kernel started. Free heap: " + String(ESP.getFreeHeap()));
+  digitalWrite(LED_STATUS, LOW);
 }
 
 void loop() {
-  esp_task_wdt_reset();  // Reset watchdog
+  drd->loop();
+  delay(10);
+}
+
+void saveConfigCallback() {
+  Serial.println("WiFiManager config needs saving...");
+  // Update internal variables from the parameters (handled in setupWiFiManager usually)
+}
+
+void setupWiFiManager() {
+  // Load existing values from preferences
+  preferences.begin("weather", false);
+  preferences.getString("fb_api_key", fb_api_key, 64);
+  preferences.getString("tg_token", tg_bot_token, 64);
+  preferences.getString("tg_chat", tg_chat_id, 20);
+  preferences.end();
+
+  // Add custom parameters to WiFiManager
+  WiFiManagerParameter custom_fb_key("fb_key", "Firebase API Key", fb_api_key, 64);
+  WiFiManagerParameter custom_tg_token("tg_token", "Telegram Bot Token", tg_bot_token, 64);
+  WiFiManagerParameter custom_tg_chat("tg_chat", "Telegram Chat ID", tg_chat_id, 20);
+
+  wm.addParameter(&custom_fb_key);
+  wm.addParameter(&custom_tg_token);
+  wm.addParameter(&custom_tg_chat);
   
-  // Handle OTA
-  ArduinoOTA.handle();
+  wm.setSaveConfigCallback(saveConfigCallback);
   
-  // Check WiFi connection
-  if (WiFi.status() != WL_CONNECTED) {
-    handleWiFiDisconnect();
+  if (isSafeMode) {
+    wm.setConfigPortalBlocking(true);
+    wm.startConfigPortal("WS_Safe_Mode", "ota@admin");
   } else {
-    wifiConnected = true;
-    reconnectAttempts = 0;
-  }
-  
-  // Check for remote commands (every 5 seconds)
-  if (millis() - lastCommandCheck > 5000 && wifiConnected && firebaseReady) {
-    checkFirebaseCommands();
-    lastCommandCheck = millis();
-    
-    // Run API test once
-    if (!hasTestedApi) {
-      testAuthenticatedRequest();
-      hasTestedApi = true;
+    wm.setConfigPortalBlocking(false);
+    if (!wm.autoConnect("WeatherStation_Setup")) {
+      Serial.println("Failed to connect, portal running...");
     }
   }
-  
-  // Read Sensors
-  readSensors();
-  
-  // Update Display
-  if (millis() - lastDisplay > DISPLAY_UPDATE) {
-    updateDisplay();
-    lastDisplay = millis();
+
+  // After portal exits (or connects), save parameters if updated
+  if (wm.getConfigPortalActive()) {
+     // If we were in safe mode or config mode, the params were updated
+     strncpy(fb_api_key, custom_fb_key.getValue(), 64);
+     strncpy(tg_bot_token, custom_tg_token.getValue(), 64);
+     strncpy(tg_chat_id, custom_tg_chat.getValue(), 20);
+
+     preferences.begin("weather", false);
+     preferences.putString("fb_api_key", fb_api_key);
+     preferences.putString("tg_token", tg_bot_token);
+     preferences.putString("tg_chat", tg_chat_id);
+     preferences.end();
+     
+     bot.updateToken(tg_bot_token);
   }
-  
-  // Upload Live Data
-  if (millis() - lastUpload > UPLOAD_INTERVAL && wifiConnected) {
-    uploadLiveData();
-    lastUpload = millis();
-  }
-  
-  // Store Historical Data
-  if (millis() - lastHistory > HISTORY_INTERVAL && wifiConnected) {
-    storeHistoricalData();
-    lastHistory = millis();
-  }
-  
-  // Check for Alerts
-  checkAlerts();
-  
-  // Blink status LED to show alive
-  static unsigned long ledBlink = 0;
-  if (millis() - ledBlink > 1000) {
-    digitalWrite(LED_STATUS, !digitalRead(LED_STATUS));
-    ledBlink = millis();
-  }
-  
-  delay(100);  // Small delay to prevent tight loop
 }
 
 void initHardware() {
@@ -437,7 +461,7 @@ void initFirebase() {
   display.println("Firebase...");
   display.display();
   
-  config.api_key = FIREBASE_API_KEY;
+  config.api_key = (strlen(fb_api_key) > 10) ? fb_api_key : FIREBASE_API_KEY;
   config.database_url = FIREBASE_DATABASE_URL;
   auth.user.email = FIREBASE_USER_EMAIL;
   auth.user.password = FIREBASE_USER_PASSWORD;
@@ -516,25 +540,24 @@ void readSensors() {
   // Force BME280 reading
   bme.takeForcedMeasurement();
   
-  // Read BME280
+  // Read local variables first to minimize Mutex hold time
   float newTemp = bme.readTemperature();
   float newHum = bme.readHumidity();
   float newPres = bme.readPressure() / 100.0F;
+  int newGasRaw = analogRead(MQ135_PIN);
   
-  // Validate readings
-  if (!isnan(newTemp) && newTemp > -40 && newTemp < 85) {
-    temperature = newTemp;
+  // Thread Safety: Protect shared data
+  if (xSemaphoreTake(sensorDataMutex, portMAX_DELAY) == pdTRUE) {
+    // Validate and update BME280 data
+    if (!isnan(newTemp) && newTemp > -40 && newTemp < 85) temperature = newTemp;
+    if (!isnan(newHum) && newHum >= 0 && newHum <= 100) humidity = newHum;
+    if (!isnan(newPres) && newPres > 800 && newPres < 1200) pressure = newPres;
+    
+    gasRaw = newGasRaw;
+    gasPPM = calculateGasPPM(gasRaw, temperature, humidity);
+    
+    xSemaphoreGive(sensorDataMutex);
   }
-  if (!isnan(newHum) && newHum >= 0 && newHum <= 100) {
-    humidity = newHum;
-  }
-  if (!isnan(newPres) && newPres > 800 && newPres < 1200) {
-    pressure = newPres;
-  }
-  
-  // Read MQ-135
-  gasRaw = analogRead(MQ135_PIN);
-  gasPPM = calculateGasPPM(gasRaw);
 }
 
 void calibrateMQ135() {
@@ -607,41 +630,36 @@ void calibrateMQ135() {
   esp_task_wdt_reset();  // Final reset after calibration
 }
 
-float calculateGasPPM(int adcValue) {
+float calculateGasPPM(int adcValue, float temp, float hum) {
   float voltage = adcValue * (3.3 / 4095.0);
-  
-  if (voltage == 0) return 0;
+  if (voltage <= 0) return 0.0;
   
   float rs = ((3.3 * RL_VALUE) / voltage) - RL_VALUE;
   
-  if (rs < 0) rs = 0;
+  // Environmental Compensation Factor (approx. from MQ-135 datasheet)
+  // Base is 20°C and 33% Humidity
+  float correctionFactor = 1.0 + (temp - 20.0) * (-0.005) + (hum - 33.0) * (-0.002);
+  float correctedRs = rs / correctionFactor;
   
-  float ratio = rs / Ro;
+  float ratio = correctedRs / Ro;
   
   // MQ-135 approximation for CO2 (adjust curve for other gases)
   // PPM = a * ratio^b
   // For CO2: a = 116.6020682, b = -2.769034857
-  float ppm = 116.6020682 * pow(ratio, -2.769034857);
-  
-  return ppm;
+  return 116.6020682 * pow(ratio, -2.769034857);
 }
 
 void updateDisplay() {
   display.clearDisplay();
   
-  // Status Bar
+  // Status Bar (Always visible)
   display.setTextSize(1);
   display.setCursor(0, 0);
+  if (isSafeMode) display.print("SAFE");
+  else if (firebaseReady && wifiConnected) display.print("ONLINE");
+  else if (wifiConnected) display.print("WiFi OK");
+  else display.print("OFFLINE");
   
-  if (firebaseReady && wifiConnected) {
-    display.print("ONLINE");
-  } else if (wifiConnected) {
-    display.print("WiFi OK");
-  } else {
-    display.print("OFFLINE");
-  }
-  
-  // WiFi Signal
   display.setCursor(80, 0);
   int rssi = WiFi.RSSI();
   if (rssi > -60) display.print("||||");
@@ -649,106 +667,136 @@ void updateDisplay() {
   else if (rssi > -80) display.print("||");
   else if (rssi > -90) display.print("|");
   else display.print("X");
-  
-  // Temperature (Large)
-  display.setTextSize(2);
-  display.setCursor(0, 15);
-  display.print(temperature, 1);
-  display.setTextSize(1);
-  display.print("C");
-  
+
+  // OLED Dimming Control
+  if (millis() - lastActivity > 300000) display.dim(true); 
+  else display.dim(false);
+
+  // MQ-135 Warmup State
+  if (isWarmingUp) {
+    display.setCursor(0, 15);
+    display.print("SENSORS WARMING...");
+    long elapsed = (millis() - warmupStart) / 1000;
+    int remaining = 180 - elapsed;
+    if (remaining < 0) remaining = 0;
+    
+    display.setCursor(0, 30);
+    display.print("Wait: ");
+    display.print(remaining);
+    display.print("s");
+    
+    display.drawRect(0, 45, 128, 8, WHITE);
+    display.fillRect(0, 45, (elapsed * 128) / 180, 8, WHITE);
+    display.display();
+    return;
+  }
+
+  // Shared Data Protection
+  if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    switch(currentDisplayPage) {
+      case 0: // Main Weather
+        display.setTextSize(2);
+        display.setCursor(0, 15);
+        display.print(temperature, 1);
+        display.setTextSize(1);
+        display.print("C  ");
+        display.setTextSize(2);
+        display.print(humidity, 0);
+        display.setTextSize(1);
+        display.print("%");
+        
+        display.setCursor(0, 40);
+        display.print("Air: ");
+        display.print(gasPPM, 0);
+        display.print(" ppm");
+        break;
+        
+      case 1: // Detailed Air
+        display.setCursor(0, 15);
+        display.print("AIR QUALITY DATA");
+        display.setCursor(0, 28);
+        display.print("Raw AD: "); display.println(gasRaw);
+        display.print("PPM:    "); display.println(gasPPM, 1);
+        display.print("Ro:     "); display.println(Ro, 1);
+        break;
+        
+      case 2: // System State
+        display.setCursor(0, 15);
+        display.print("SYSTEM: v"); display.println(FIRMWARE_VERSION);
+        display.print("IP: "); display.println(WiFi.localIP().toString());
+        display.print("UP: "); display.println(millis()/60000);
+        display.print("Time: "); display.println(timeClient.getFormattedTime());
+        break;
+    }
+    xSemaphoreGive(sensorDataMutex);
+  }
+
   // Alert Indicator
   if (gasAlertActive || tempAlertActive) {
     display.setTextSize(2);
-    display.setCursor(100, 15);
+    display.setCursor(110, 15);
     display.print("!");
   }
-  
-  // Details
-  display.setTextSize(1);
-  display.setCursor(0, 38);
-  display.print("Hum: ");
-  display.print(humidity, 0);
-  display.println("%");
-  
-  display.setCursor(0, 48);
-  display.print("Air: ");
-  display.print(gasPPM, 0);
-  display.println(" ppm");
-  
-  display.setCursor(0, 56);
-  display.print("P:");
-  display.print(pressure, 0);
-  display.print("hPa");
   
   display.display();
 }
 
 void uploadLiveData() {
-  if (!Firebase.ready()) {
-    Serial.println("Firebase not ready");
-    firebaseReady = false;
-    return;
-  }
-  
-  firebaseReady = true;
+  if (!firebaseReady || !wifiConnected) return;
   
   FirebaseJson json;
   String basePath = "/weather_station/" + String(DEVICE_ID);
   
-  // Live sensor data
-  json.set("live/temperature", temperature);
-  json.set("live/humidity", humidity);
-  json.set("live/pressure", pressure);
-  json.set("live/gas_raw", gasRaw);
-  json.set("live/gas_ppm", gasPPM);
-  json.set("live/timestamp/.sv", "timestamp");  // Firebase server timestamp
+  if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    json.set("live/temperature", temperature);
+    json.set("live/humidity", humidity);
+    json.set("live/pressure", pressure);
+    json.set("live/gas_raw", gasRaw);
+    json.set("live/gas_ppm", gasPPM);
+    xSemaphoreGive(sensorDataMutex);
+  }
   
-  // Device metadata
+  json.set("live/timestamp/.sv", "timestamp");
   json.set("meta/device_id", DEVICE_ID);
   json.set("meta/firmware_version", FIRMWARE_VERSION);
-  json.set("meta/status", "online");
   json.set("meta/signal_strength", WiFi.RSSI());
   json.set("meta/uptime_seconds", millis() / 1000);
   json.set("meta/free_heap", ESP.getFreeHeap());
-  json.set("meta/sensor_ro", Ro);
-  json.set("meta/last_seen/.sv", "timestamp");  // Update last_seen for presence detection
+  json.set("meta/warming_up", isWarmingUp);
   
-  // Alert status
   json.set("alerts/gas_alert", gasAlertActive);
   json.set("alerts/temp_alert", tempAlertActive);
   
   if (Firebase.RTDB.updateNode(&fbdo, basePath.c_str(), &json)) {
     Serial.println("✓ Live data uploaded");
   } else {
-    Serial.print("✗ Upload failed: ");
-    Serial.println(fbdo.errorReason());
+    Serial.println("✗ Upload failed: " + fbdo.errorReason());
   }
 }
 
 void storeHistoricalData() {
-  if (!Firebase.ready()) return;
+  if (!firebaseReady || !wifiConnected) return;
   
-  // Store historical data with timestamp
   String historyPath = "/weather_station/" + String(DEVICE_ID) + "/history";
-  
   FirebaseJson json;
-  json.set("temperature", temperature);
-  json.set("humidity", humidity);
-  json.set("pressure", pressure);
-  json.set("gas_ppm", gasPPM);
-  json.set("timestamp/.sv", "timestamp");  // Firebase server timestamp
   
-  // Push to history (Firebase auto-generates unique key)
+  if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    json.set("temperature", temperature);
+    json.set("humidity", humidity);
+    json.set("pressure", pressure);
+    json.set("gas_ppm", gasPPM);
+    xSemaphoreGive(sensorDataMutex);
+  } else {
+    return; // Skip if sensors busy
+  }
+  
+  json.set("timestamp/.sv", "timestamp");
+  
   if (Firebase.RTDB.pushJSON(&fbdo, historyPath.c_str(), &json)) {
     Serial.println("✓ Historical data stored");
-    
-    // Optional: Clean old history (keep last 100 records)
-    // This prevents unlimited growth
     cleanOldHistory();
   } else {
-    Serial.print("✗ History failed: ");
-    Serial.println(fbdo.errorReason());
+    Serial.println("✗ History failed: " + fbdo.errorReason());
   }
 }
 
@@ -777,19 +825,21 @@ void cleanOldHistory() {
 }
 
 void sendBootNotification() {
-  if (!Firebase.ready()) return;
+  if (!firebaseReady || !wifiConnected) return;
   
   String notifPath = "/weather_station/" + String(DEVICE_ID) + "/notifications";
   
   FirebaseJson json;
   json.set("type", "boot");
-  json.set("message", "Device started");
+  json.set("message", isSafeMode ? "Device started in SAFE MODE" : "Device started normally");
   json.set("firmware", FIRMWARE_VERSION);
   json.set("timestamp/.sv", "timestamp");
   json.set("ip", WiFi.localIP().toString());
   
   if (Firebase.RTDB.pushJSON(&fbdo, notifPath.c_str(), &json)) {
     Serial.println("✓ Boot notification sent");
+  } else {
+    Serial.println("✗ Boot notification failed: " + fbdo.errorReason());
   }
 }
 
@@ -1021,5 +1071,156 @@ void logVersionHistory() {
   } else {
     Serial.print("✗ Version history failed: ");
     Serial.println(fbdo.errorReason());
+  }
+}
+// --- FreeRTOS Tasks ---
+
+void networkTaskImpl(void* _) {
+  Serial.println("Network Task started on Core 0");
+  
+  tgClient.setInsecure(); // Use insecure for Telegram to simplify (or provide certificate)
+  
+  bool apiTested = false;
+  bool verLogged = false;
+
+  for (;;) {
+    // 1. Process WiFiManager Portal (Non-blocking)
+    wm.process();
+    
+    // 2. Handle OTA
+    ArduinoOTA.handle();
+    
+    // 3. NTP & Time Update
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!wifiConnected) {
+        Serial.println("WiFi Connected! Initializing network services...");
+        initFirebase();
+        setupOTA();
+        if (!timeClient.isTimeSet()) timeClient.begin();
+      }
+      timeClient.update();
+      wifiConnected = true;
+    } else {
+      wifiConnected = false;
+    }
+    
+    // 4. Firebase Logic
+    if (Firebase.ready() && wifiConnected) {
+      firebaseReady = true;
+      
+      // Initial tasks
+      if (!verLogged) {
+        logVersionHistory();
+        verLogged = true;
+      }
+      if (!apiTested) {
+        testAuthenticatedRequest();
+        apiTested = true;
+      }
+
+      // Periodics
+      static unsigned long lastCheck = 0;
+      if (millis() - lastCheck > 5000) {
+        checkFirebaseCommands();
+        lastCheck = millis();
+      }
+
+      static unsigned long lastUp = 0;
+      if (millis() - lastUp > UPLOAD_INTERVAL) {
+        uploadLiveData();
+        lastUp = millis();
+      }
+
+      static unsigned long lastHist = 0;
+      if (millis() - lastHist > HISTORY_INTERVAL) {
+        storeHistoricalData();
+        lastHist = millis();
+      }
+    } else {
+      firebaseReady = false;
+    }
+    
+    // 5. Telegram
+    handleTelegramCommands();
+
+    vTaskDelay(pdMS_TO_TICKS(100)); // Yield to OS
+  }
+}
+
+void sensorTaskImpl(void* _) {
+  Serial.println("Sensor Task started on Core 1");
+  
+  for (;;) {
+    // 1. Read Sensors (Mutex protected inside)
+    readSensors();
+    
+    // 2. System Logic
+    updateWarmup();
+    checkTouchSensor();
+    checkAlerts();
+    
+    // 3. Update UI
+    static unsigned long lastDisp = 0;
+    if (millis() - lastDisp > DISPLAY_UPDATE) {
+      updateDisplay();
+      lastDisp = millis();
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+// --- Utility Functions ---
+
+void handleTelegramCommands() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 2000) return; // Rate limit
+  lastCheck = millis();
+
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  while (numNewMessages) {
+    String chat_id = String(bot.messages[0].chat_id);
+    String text = bot.messages[0].text;
+    String from_name = bot.messages[0].from_name;
+
+    if (text == "/status") {
+      String msg = "🌤 *ESP32 WS v3.0.0*\n";
+      if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        msg += "Temp: " + String(temperature, 1) + "°C\n";
+        msg += "Hum: " + String(humidity, 0) + "%\n";
+        msg += "Air Q: " + String(gasPPM, 0) + " ppm\n";
+        xSemaphoreGive(sensorDataMutex);
+      }
+      msg += "Uptime: " + String(millis()/60000) + " min";
+      bot.sendMessage(chat_id, msg, "Markdown");
+    } 
+    else if (text == "/reboot") {
+      bot.sendMessage(chat_id, "Rebooting system...", "");
+      delay(1000);
+      ESP.restart();
+    }
+    
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+}
+
+void checkTouchSensor() {
+  // Using Capacitive Touch or Digital Input
+  if (touchRead(TOUCH_PIN) < TOUCH_THRESHOLD) {
+    currentDisplayPage = (currentDisplayPage + 1) % MAX_PAGES;
+    lastActivity = millis();
+    displayDimmed = false;
+    Serial.print("Touch! Switching to page ");
+    Serial.println(currentDisplayPage);
+    delay(200); // Simple debounce
+  }
+}
+
+void updateWarmup() {
+  if (isWarmingUp) {
+    if (millis() - warmupStart > 180000) {
+      isWarmingUp = false;
+      Serial.println("MQ-135 Warmup complete.");
+    }
   }
 }
