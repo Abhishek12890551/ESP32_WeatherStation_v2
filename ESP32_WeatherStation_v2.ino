@@ -1,5 +1,5 @@
 /*
- * ESP32 Weather Station v2.1.0
+ * ESP32 Weather Station v2.1.2
  * 
  * Features:
  * - Real-time BME280 sensor monitoring
@@ -63,9 +63,10 @@
 // - FIREBASE_USER_EMAIL
 // - FIREBASE_USER_PASSWORD
 // - DEVICE_ID
+// - OTA_PASSWORD
 
 // Firmware Info
-const char* FIRMWARE_VERSION = "2.1.1";
+const char* FIRMWARE_VERSION = "2.1.2";
 
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -365,7 +366,7 @@ void handleWiFiDisconnect() {
 
 void setupOTA() {
   ArduinoOTA.setHostname(DEVICE_ID);
-  ArduinoOTA.setPassword("weather2024");  // Change this!
+  ArduinoOTA.setPassword(OTA_PASSWORD);
   
   ArduinoOTA.onStart([]() {
     String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
