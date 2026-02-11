@@ -66,7 +66,8 @@
 // - OTA_PASSWORD
 
 // Firmware Info
-const char* FIRMWARE_VERSION = "2.1.2";
+// Firmware Info
+const char* FIRMWARE_VERSION = "2.1.3";
 
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -120,7 +121,8 @@ void sendBootNotification();
 void checkAlerts();
 void sendAlert(String alertType, String message);
 void checkFirebaseCommands();
-void testAuthenticatedRequest(); // Added prototype
+void testAuthenticatedRequest();
+void logVersionHistory();
 
 void setup() {
   Serial.begin(115200);
@@ -188,6 +190,14 @@ void setup() {
   
   // Send boot notification
   sendBootNotification();
+  
+  // Track firmware version and log history if it's a new version
+  String lastVersion = preferences.getString("last_ver", "0.0.0");
+  if (lastVersion != FIRMWARE_VERSION) {
+    Serial.println("New firmware version detected: " + String(FIRMWARE_VERSION));
+    logVersionHistory();
+    preferences.putString("last_ver", FIRMWARE_VERSION);
+  }
   
   Serial.println("Setup complete! System ready.");
   Serial.println("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -987,4 +997,29 @@ void testAuthenticatedRequest() {
   
   http.end();
   Serial.println("-----------------------------------------\n");
+}
+
+void logVersionHistory() {
+  if (!Firebase.ready()) return;
+  
+  // Use underscore instead of dot for Firebase keys if needed, but here it's a path component
+  String historyPath = "/weather_station/" + String(DEVICE_ID) + "/version_history/" + String(FIRMWARE_VERSION);
+  historyPath.replace(".", "_");
+  
+  FirebaseJson json;
+  if (String(FIRMWARE_VERSION) == "2.1.3") {
+    json.set("added", "WiFi credentials restore logic, version history tracking in database");
+    json.set("removed", "Hardcoded secrets in main sketch (moved to secrets.h)");
+  } else {
+    json.set("added", "General maintenance");
+    json.set("removed", "None");
+  }
+  json.set("timestamp/.sv", "timestamp");
+  
+  if (Firebase.RTDB.setJSON(&fbdo, historyPath.c_str(), &json)) {
+    Serial.println("✓ Version history logged to database");
+  } else {
+    Serial.print("✗ Version history failed: ");
+    Serial.println(fbdo.errorReason());
+  }
 }
